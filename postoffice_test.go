@@ -1,11 +1,14 @@
 package postoffice
 
 import (
+	"strconv"
 	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/suite"
 )
+
+////////// Suite //////////
 
 type PostOfficeSuite struct {
 	suite.Suite
@@ -24,6 +27,14 @@ func (s *PostOfficeSuite) TearDownTest() {
 
 func (s *PostOfficeSuite) TearDownSuite() {}
 
+func TestPostOfficeSuite(t *testing.T) {
+	suite.Run(t, new(PostOfficeSuite))
+}
+
+////////// Testing //////////
+
+///// Receive /////
+
 func (s *PostOfficeSuite) TestReceive_NotNil() {
 	// Setup
 	wg := sync.WaitGroup{}
@@ -34,7 +45,7 @@ func (s *PostOfficeSuite) TestReceive_NotNil() {
 		slot <- ""
 	}()
 
-	value, received := s.po.ReceiveFrom("test")
+	key, value, received := s.po.Receive()
 
 	wg.Wait()
 
@@ -43,6 +54,7 @@ func (s *PostOfficeSuite) TestReceive_NotNil() {
 	s.Require().NotNil(value)
 	_, isString := value.(string)
 	s.Assert().True(isString)
+	s.Assert().EqualValues("test", key)
 }
 
 func (s *PostOfficeSuite) TestReceive_Nil() {
@@ -50,9 +62,41 @@ func (s *PostOfficeSuite) TestReceive_Nil() {
 	s.po.Close()
 
 	// Verification
-	_, received := s.po.ReceiveFrom("test")
+	_, _, received := s.po.Receive()
 	s.Require().False(received)
 }
+
+func (s *PostOfficeSuite) TestReceive_Multi() {
+	// Setup
+	wg := sync.WaitGroup{}
+
+	f := func(name string) {
+		defer wg.Done()
+		slot := s.po.getSlot(name)
+		slot <- name
+	}
+
+	var iterations = 5
+
+	wg.Add(iterations)
+	for i := 0; i < iterations; i++ {
+		go f(strconv.Itoa(i))
+	}
+
+	// Verification
+	var count int
+	for _, value, received := s.po.Receive(); received; _, value, received = s.po.Receive() {
+		count++
+		s.Require().NotNil(value)
+		_, isString := value.(string)
+		s.Assert().True(isString)
+	}
+	s.Assert().EqualValues(iterations, count)
+
+	wg.Wait()
+}
+
+///// ReceiveFrom /////
 
 func (s *PostOfficeSuite) TestReceiveFrom_NotNil() {
 	// Setup
@@ -83,6 +127,8 @@ func (s *PostOfficeSuite) TestReceiveFrom_Nil() {
 	_, received := s.po.ReceiveFrom("test")
 	s.Require().False(received)
 }
+
+///// Send /////
 
 func (s *PostOfficeSuite) TestSend_True() {
 	// Setup
@@ -119,8 +165,4 @@ func (s *PostOfficeSuite) TestgetSlot() {
 	// Verification
 	s.Require().NotNil(slot)
 	s.Assert().Empty(slot)
-}
-
-func TestPostOfficeSuite(t *testing.T) {
-	suite.Run(t, new(PostOfficeSuite))
 }
