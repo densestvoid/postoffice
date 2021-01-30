@@ -1,164 +1,45 @@
 package postoffice
 
 import (
-	"strconv"
-	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/suite"
 )
 
-////////// Suite //////////
+////////// Base Suite //////////
 
-type PostOfficeSuite struct {
+type poSuite struct {
 	suite.Suite
 	po *PostOffice
 }
 
-func (s *PostOfficeSuite) SetupSuite() {}
+func (s *poSuite) SetupSuite() {}
 
-func (s *PostOfficeSuite) SetupTest() {
+func (s *poSuite) SetupTest() {
 	s.po = &PostOffice{}
 }
 
-func (s *PostOfficeSuite) TearDownTest() {
-	s.po.Close()
+func (s *poSuite) TearDownTest() {}
+
+func (s *poSuite) TearDownSuite() {}
+
+////////// Suite //////////
+
+type HelperSuite struct {
+	poSuite
 }
 
-func (s *PostOfficeSuite) TearDownSuite() {}
-
-func TestPostOfficeSuite(t *testing.T) {
-	suite.Run(t, new(PostOfficeSuite))
+func TestHelperSuite(t *testing.T) {
+	suite.Run(t, new(HelperSuite))
 }
 
 ////////// Testing //////////
 
-///// Receive /////
+///// selectCases /////
 
-func (s *PostOfficeSuite) TestReceive_NotNil() {
-	// Setup
-	wg := sync.WaitGroup{}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		slot := s.po.getSlot("test")
-		slot <- ""
-	}()
+///// getSlot /////
 
-	key, value, received := s.po.Receive()
-
-	wg.Wait()
-
-	// Verification
-	s.Require().True(received)
-	s.Require().NotNil(value)
-	_, isString := value.(string)
-	s.Assert().True(isString)
-	s.Assert().EqualValues("test", key)
-}
-
-func (s *PostOfficeSuite) TestReceive_Nil() {
-	// Setup
-	s.po.Close()
-
-	// Verification
-	_, _, received := s.po.Receive()
-	s.Require().False(received)
-}
-
-func (s *PostOfficeSuite) TestReceive_Multi() {
-	// Setup
-	wg := sync.WaitGroup{}
-
-	f := func(name string) {
-		defer wg.Done()
-		slot := s.po.getSlot(name)
-		slot <- name
-	}
-
-	var iterations = 5
-
-	wg.Add(iterations)
-	for i := 0; i < iterations; i++ {
-		go f(strconv.Itoa(i))
-	}
-
-	// Verification
-	var count int
-	for _, value, received := s.po.Receive(); received; _, value, received = s.po.Receive() {
-		count++
-		s.Require().NotNil(value)
-		_, isString := value.(string)
-		s.Assert().True(isString)
-	}
-	s.Assert().EqualValues(iterations, count)
-
-	wg.Wait()
-}
-
-///// ReceiveFrom /////
-
-func (s *PostOfficeSuite) TestReceiveFrom_NotNil() {
-	// Setup
-	wg := sync.WaitGroup{}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		slot := s.po.getSlot("test")
-		slot <- ""
-	}()
-
-	value, received := s.po.ReceiveFrom("test")
-
-	wg.Wait()
-
-	// Verification
-	s.Require().True(received)
-	s.Require().NotNil(value)
-	_, isString := value.(string)
-	s.Assert().True(isString)
-}
-
-func (s *PostOfficeSuite) TestReceiveFrom_Nil() {
-	// Setup
-	s.po.Close()
-
-	// Verification
-	_, received := s.po.ReceiveFrom("test")
-	s.Require().False(received)
-}
-
-///// Send /////
-
-func (s *PostOfficeSuite) TestSend_True() {
-	// Setup
-	wg := sync.WaitGroup{}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		s.Require().True(s.po.Send("test", ""))
-	}()
-
-	slot := s.po.getSlot("test")
-	msg := <-slot
-
-	wg.Wait()
-
-	// Verification
-	s.Require().NotNil(msg)
-	_, isString := msg.(string)
-	s.Assert().True(isString)
-}
-
-func (s *PostOfficeSuite) TestSend_False() {
-	// Setup
-	s.po.Close()
-
-	// Verification
-	s.Require().False(s.po.Send("test", ""))
-}
-
-func (s *PostOfficeSuite) TestgetSlot() {
+func (s *HelperSuite) TestgetSlot() {
 	// Setup
 	slot := s.po.getSlot("test")
 

@@ -1,100 +1,167 @@
+// Package postoffice is a combination channel fan-in/fan-out multiplexer
 package postoffice
 
 import (
+	"context"
 	"reflect"
 	"sync"
 )
 
+type Mail struct {
+	Address, Contents interface{}
+}
+
 type PostOffice struct {
 	slots   sync.Map
 	reloads reloads
-
-	closeOnce sync.Once
-	close     chan struct{}
 }
 
-func (po *PostOffice) Close() {
-	po.closeOnce.Do(func() {
-		po.close = make(chan struct{})
-		close(po.close)
-	})
-}
-
-func (po *PostOffice) selectCases() ([]string, []reflect.SelectCase) {
-	var keys []string
+func (po *PostOffice) selectCases(dir reflect.SelectDir, addresses ...interface{}) ([]interface{}, []reflect.SelectCase) {
+	var keys []interface{}
 	var cases []reflect.SelectCase
-	po.slots.Range(func(key interface{}, value interface{}) bool {
-		keyStr, ok := key.(string)
-		if !ok {
-			return true
+
+	if len(addresses) > 0 {
+		for _, address := range addresses {
+			keys = append(keys, address)
+
+			ch := po.getSlot(address)
+			cases = append(cases, reflect.SelectCase{
+				Dir:  dir,
+				Chan: reflect.ValueOf(ch),
+			})
 		}
+	} else {
+		po.slots.Range(func(key interface{}, value interface{}) bool {
+			keys = append(keys, key)
 
-		keys = append(keys, keyStr)
-
-		ch := po.getSlot(keyStr)
-		cases = append(cases, reflect.SelectCase{
-			Dir:  reflect.SelectRecv,
-			Chan: reflect.ValueOf(ch),
+			ch := po.getSlot(key)
+			cases = append(cases, reflect.SelectCase{
+				Dir:  dir,
+				Chan: reflect.ValueOf(ch),
+			})
+			return true
 		})
-		return true
-	})
+	}
+
 	return keys, cases
 }
 
-func (po *PostOffice) Receive() (interface{}, interface{}, bool) {
-	reCh := &reloadChan{ch: make(chan struct{})}
+func (po *PostOffice) Receive(ctx context.Context, addresses ...interface{}) (*Mail, bool) {
+	reCh := newReloadChan()
 	po.reloads.Add(reCh)
 	defer po.reloads.Remove(reCh)
 
-	keys, cases := po.selectCases()
-	cases = append(cases, reCh.SelectCase(), reflect.SelectCase{
-		Dir:  reflect.SelectRecv,
-		Chan: reflect.ValueOf(po.close),
-	})
-
-	index, value, _ := reflect.Select(cases)
-	for index >= len(keys) {
-		if index > len(keys) {
-			return "", nil, false
-		}
-
-		reCh.Reset()
-
-		keys, cases = po.selectCases()
-		cases = append(cases, reCh.SelectCase(), reflect.SelectCase{
+	for {
+		keys, cases := po.selectCases(reflect.SelectRecv, addresses...)
+		cases = append(cases, reCh.toSelectCase(), reflect.SelectCase{
 			Dir:  reflect.SelectRecv,
-			Chan: reflect.ValueOf(po.close),
+			Chan: reflect.ValueOf(ctx.Done()),
 		})
 
-		index, value, _ = reflect.Select(cases)
-	}
+		index, value, ok := reflect.Select(cases)
 
-	return keys[index], value.Interface(), true
-}
+		if !ok && index == len(cases)-1 {
+			return nil, false
+		} else if index == len(cases)-2 {
+			reCh.reset()
+			continue
+		}
 
-func (po *PostOffice) ReceiveFrom(slot interface{}) (interface{}, bool) {
-	select {
-	case <-po.close:
-		return nil, false
-	case value := <-po.getSlot(slot):
-		return value, true
+		return &Mail{keys[index], value.Interface()}, true
 	}
 }
 
-func (po *PostOffice) Send(slot interface{}, i interface{}) bool {
-	select {
-	case <-po.close:
-		return false
-	case po.getSlot(slot) <- i:
+func (po *PostOffice) Collect(ctx context.Context, multiPass bool) []*Mail {
+	var (
+		wg                sync.WaitGroup
+		collectedMailLock sync.Mutex
+		collectedMail     []*Mail
+	)
+
+	po.slots.Range(func(key, contents interface{}) bool {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				mail, ok := po.Receive(ctx, key)
+				if !ok {
+					break
+				}
+
+				collectedMailLock.Lock()
+				collectedMail = append(collectedMail, mail)
+				collectedMailLock.Unlock()
+
+				if !multiPass {
+					break
+				}
+			}
+		}()
 		return true
+	})
+
+	wg.Wait()
+	return collectedMail
+}
+
+func (po *PostOffice) Send(ctx context.Context, contents interface{}, addresses ...interface{}) (interface{}, bool) {
+	reCh := newReloadChan()
+	po.reloads.Add(reCh)
+	defer po.reloads.Remove(reCh)
+
+	for {
+		keys, cases := po.selectCases(reflect.SelectSend, addresses...)
+		for i := range cases {
+			cases[i].Send = reflect.ValueOf(contents)
+		}
+		cases = append(cases, reCh.toSelectCase(), reflect.SelectCase{
+			Dir:  reflect.SelectRecv,
+			Chan: reflect.ValueOf(ctx.Done()),
+		})
+
+		index, _, ok := reflect.Select(cases)
+
+		if !ok && index == len(cases)-1 {
+			return nil, false
+		} else if index == len(cases)-2 {
+			reCh.reset()
+			continue
+		}
+
+		return keys[index], true
 	}
 }
 
-func (po *PostOffice) getSlot(slot interface{}) chan interface{} {
-	value, loaded := po.slots.LoadOrStore(slot, make(chan interface{}))
+func (po *PostOffice) Broadcast(ctx context.Context, contents interface{}) []interface{} {
+	var (
+		wg            sync.WaitGroup
+		addressesLock sync.Mutex
+		addresses     []interface{}
+	)
+
+	po.slots.Range(func(key, contents interface{}) bool {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, ok := po.Send(ctx, contents, key); ok {
+				addressesLock.Lock()
+				defer addressesLock.Unlock()
+
+				addresses = append(addresses, key)
+			}
+		}()
+		return true
+	})
+
+	wg.Wait()
+	return addresses
+}
+
+func (po *PostOffice) getSlot(address interface{}) chan interface{} {
+	value, loaded := po.slots.LoadOrStore(address, make(chan interface{}))
 	ch, _ := value.(chan interface{})
 	if !loaded {
-		po.reloads.Reload()
+		go po.reloads.Reload()
 	}
 	return ch
 }
