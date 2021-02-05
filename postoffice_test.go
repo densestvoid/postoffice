@@ -35,6 +35,18 @@ func TestHelperSuite(t *testing.T) {
 
 ////////// Testing //////////
 
+///// Addresses /////
+func (s *HelperSuite) TestAddresses() {
+	// Setup
+	s.po.getSlot("a")
+	s.po.getSlot("b")
+
+	// Verification
+	addrs := s.po.Addresses()
+	s.Require().NotEmpty(addrs)
+	s.Assert().Len(addrs, 2)
+}
+
 ///// selectCases /////
 
 ///// getSlot /////

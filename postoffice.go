@@ -46,6 +46,15 @@ func (po *PostOffice) selectCases(dir reflect.SelectDir, addresses ...interface{
 	return keys, cases
 }
 
+func (po *PostOffice) Addresses() []interface{} {
+	var keys []interface{}
+	po.slots.Range(func(key interface{}, _ interface{}) bool {
+		keys = append(keys, key)
+		return true
+	})
+	return keys
+}
+
 func (po *PostOffice) Receive(ctx context.Context, addresses ...interface{}) (*Mail, bool) {
 	reCh := newReloadChan()
 	po.reloads.Add(reCh)
