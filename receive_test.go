@@ -52,7 +52,7 @@ func (s *ReceiveSuite) TestMultiTrue() {
 		slot <- ""
 	}()
 
-	mail, received := s.po.Receive(context.Background(), "test", "nottest")
+	mail, received := s.po.Receive(context.Background(), []interface{}{"test", "nottest"}...)
 
 	wg.Wait()
 
